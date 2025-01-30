@@ -48,14 +48,38 @@ commit used in the image (git), or checked against a checksum (wget).
 "
 }
 
+git_checkout() {
+	local url="$1"
+	# Extract the repo name (before the commit hash)
+	local repo=$(echo "$url" | sed -e "s/@.*$//")
+	# Extract the commit hash
+	local commit=$(echo "$url" | sed -e "s/^.*@//" -e "s/#.*$//")
+	# Clone the whole repo (this can be a lot -- and you might get throttled)
+	# Use the fully qualified encoded URL as the directory name
+	# It's pretty darn long, but it should be guaranteed unique, and it's very informative...
+	info "Cloning repo [$repo]"
+	[ "$DRYRUN" = "1" ] && return
+	# If we already have a clean git tree, then we can skip the clone (helps with re-runs)
+	if [ -d "$ref" ] && cd "$ref" && git status 2>&1 >/dev/null; then
+		info "Already have a clean working repo at [$repo]"
+	else
+		# Directory is busted, or doesn't exist, so clone fresh from source
+		rm -rf "$ref" && git clone "$repo" "$ref"
+		cd "$ref"
+	fi
+	# Rewind back to the exact specified commit in the sbom
+	git checkout "$commit"
+	cd - 2>&1 >/dev/null
+}
+
 checkdeps
 platform="amd64"
-dryrun=0
+DRYRUN=0
 # Handle command line options
 while [ ! -z "$1" ]; do
 	case "$1" in
 		--dry-run)
-			dryrun=1
+			DRYRUN=1
 			shift
 		;;
 		-p|--platform)
@@ -87,29 +111,19 @@ cosign download attestation \
 info "Fetched sbom [$sbom]"
 
 # TODO: jq would be better here, obviously, but I don't speak jq...
-for ref in $(grep "[\"]referenceLocator[\"]: .*_url=" "$sbom" | sed -e "s/^.*=//" -e "s/\",$//"); do
+for ref in $(grep "[\"]referenceLocator[\"]: " "$sbom" | sed -e "s/\",$//" -e "s/^.*\"//"); do
 	url=$(urldecode "$ref")
 	info "Found url [$url]"
+	# Handle various strategies for fetching sources
 	case "$url" in
-		git+*)
-			# Strip the leading git+
-			url=$(echo "$url" | sed -e "s/^git+//")
-			# Extract the repo name (before the commit hash)
-			repo=$(echo "$url" | sed -e "s/@.*$//")
-			# Extract the commit hash
-			commit=$(echo "$url" | sed -e "s/^.*@//")
-			# Clone the whole repo (this can be a lot -- and you might get throttled)
-			# Use the fully qualified encoded URL as the directory name
-			# It's pretty darn long, but it should be guaranteed unique, and it's very informative...
-			info "Cloning repo [$repo]"
-			[ "$dryrun" = "1" ] && continue
-			rm -rf "$ref" && git clone "$repo" "$ref"
-			cd "$ref"
-			# Rewind back to the exact specified commit in the sbom
-			git checkout "$commit"
-			cd - 2>&1 >/dev/null
+		pkg:generic/*vcs_url=git+*)
+			# Strip the leading data
+			url=$(echo "$url" | sed -e "s/.*git+//")
+			git_checkout "$url"
 		;;
-		https*)
+		pkg:generic/*download_url=*)
+			# Strip the leading data
+			url=$(echo "$url" | sed -e "s/^.*download_url=//")
 			# Get the checksum
 			checksum_encoded=$(grep "checksum=.*$ref" "$sbom" | sed -e "s/.*checksum=//" -e "s/&.*$//")
 			checksum=$(urldecode "$checksum_encoded")
@@ -118,7 +132,7 @@ for ref in $(grep "[\"]referenceLocator[\"]: .*_url=" "$sbom" | sed -e "s/^.*=//
 			cmd="$checksum_method""sum"
 			type "$cmd" 2>&1 >/dev/null || error "Please install [$cmd]"
 			info "Downloading archive [$url]"
-			[ "$dryrun" = "1" ] && continue
+			[ "$DRYRUN" = "1" ] && continue
 			rm -rf "$ref" && mkdir -p "$ref"
 			cd "$ref"
 			wget -q "$url"
@@ -126,7 +140,20 @@ for ref in $(grep "[\"]referenceLocator[\"]: .*_url=" "$sbom" | sed -e "s/^.*=//
 			tar xf *
 			cd - 2>&1 >/dev/null
 		;;
+		pkg:github/*)
+			# Strip the leading data
+			url=$(echo "$url" | sed -e "s|^pkg:github|https://github.com|")
+			git_checkout "$url"
+		;;
+		pkg:apk/wolfi*)
+			info "WARNING: Wolfi APK Download not yet handled; skipping [$url]"
+		;;
+		pkg:oci/image*)
+			info "WARNING: OCI Image Download not yet handled; skipping [$url]"
+		;;
 		*)
+			# Strip the leading data
+			info "WARNING: Unhandled source download method; skipping [$url]"
 		;;
 	esac
 done
