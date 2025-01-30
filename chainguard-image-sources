@@ -1,0 +1,86 @@
+#!/bin/bash
+
+set -e
+
+error() {
+	echo "$ERROR: $@" 1>&2
+	exit 1
+}
+
+# Check dependencies
+checkdeps() {
+	type cosign 2>&1 >/dev/null || error "Please install [cosign]."
+	type jq 2>&1 >/dev/null || error "Please install [jq]."
+	type git 2>&1 >/dev/null || error "Please install [git]."
+}
+
+# Decode URLs
+urldecode() { : "${*//+/ }"; echo -e "${_//%/\\x}"; }
+
+usage() {
+	echo "
+$0 [OPTIONS] IMAGE1[:TAG]
+
+Options:
+ -p|--platform [amd64|arm64]	Default = amd64
+
+Image:		Image short name, as in the * in: cgr.dev/chainguard/*
+		  - wolfi-base:latest
+		  - python:3.11
+		  - openjdk
+		Default tag = :latest
+
+This tool will create a new directory in your present working directory called sources/
+It will then download the SBOM associated with your specified image, and then
+use git to clone all upstream source repos, and checkout at the specific
+commit used in the image.
+"
+}
+
+checkdeps
+platform="amd64"
+# Handle command line options
+while [ ! -z "$1" ]; do
+	case "$1" in
+		-p|--platform)
+			platform="$2"
+			shift 2
+		;;
+		-h|--help)
+			usage
+			exit 0
+		;;
+		*)
+			image="$1"
+			shift
+		;;
+	esac
+done
+
+# Make a directory to work in
+mkdir -p sources/"$image-$platform"
+cd sources/"$image-$platform"
+
+sbom="$image-$platform.sbom.spdx"
+cosign download attestation \
+  --platform linux/$platform \
+  --predicate-type=https://spdx.dev/Document \
+  cgr.dev/chainguard/$image | \
+  jq '.payload | @base64d | fromjson | .predicate' > "$sbom"
+
+# TODO: jq would be better here, obviously
+# TODO: This only handles git, currently; this needs to handle download_url via curl/wget (verifying checksums, too)
+for ref in $(grep "[\"]referenceLocator[\"]: .*vcs_url" "$sbom" | sed -e "s/.*\?vcs_url=git%2B//" -e "s/\",$//"); do
+	url=$(urldecode "$ref")
+	repo=$(echo "$url" | sed -e "s/@.*$//")
+	commit=$(echo "$url" | sed -e "s/^.*@//")
+	# Clone the whole repo
+	rm -rf "$ref"
+	git clone --quiet "$repo" "$ref"
+	# Use the fully qualified encoded URL as the directory name
+	# It's pretty darn long, but it should be guaranteed unique, and it's very informative...
+	cd "$ref"
+	# Rewind to the precise commit
+	git checkout --quiet "$commit"
+	cd - 2>&1 >/dev/null
+done
