@@ -3,8 +3,12 @@
 set -e
 
 error() {
-	echo "$ERROR: $@" 1>&2
+	echo "ERROR: $@" 1>&2
 	exit 1
+}
+
+info() {
+	echo "INFO: $@" 1>&2
 }
 
 # Check dependencies
@@ -12,6 +16,7 @@ checkdeps() {
 	type cosign 2>&1 >/dev/null || error "Please install [cosign]."
 	type jq 2>&1 >/dev/null || error "Please install [jq]."
 	type git 2>&1 >/dev/null || error "Please install [git]."
+	type sha512sum 2>&1 >/dev/null || error "Please install [sha512sum]."
 }
 
 # Decode URLs
@@ -23,6 +28,7 @@ $0 [OPTIONS] IMAGE1[:TAG]
 
 Options:
  -p|--platform [amd64|arm64]	Default = amd64
+ --verbose			Show verbose messages
 
 Image:		Image short name, as in the * in: cgr.dev/chainguard/*
 		  - wolfi-base:latest
@@ -39,9 +45,14 @@ commit used in the image.
 
 checkdeps
 platform="amd64"
+verbose=0
 # Handle command line options
 while [ ! -z "$1" ]; do
 	case "$1" in
+		--verbose)
+			verbose=1
+			shift
+		;;
 		-p|--platform)
 			platform="$2"
 			shift 2
@@ -70,17 +81,42 @@ cosign download attestation \
 
 # TODO: jq would be better here, obviously
 # TODO: This only handles git, currently; this needs to handle download_url via curl/wget (verifying checksums, too)
-for ref in $(grep "[\"]referenceLocator[\"]: .*vcs_url" "$sbom" | sed -e "s/.*\?vcs_url=git%2B//" -e "s/\",$//"); do
+#for ref in $(grep "[\"]referenceLocator[\"]: .*vcs_url" "$sbom" | sed -e "s/.*\?vcs_url=git%2B//" -e "s/\",$//"); do
+for ref in $(grep "[\"]referenceLocator[\"]: .*_url=" "$sbom" | sed -e "s/^.*=//" -e "s/\",$//"); do
 	url=$(urldecode "$ref")
-	repo=$(echo "$url" | sed -e "s/@.*$//")
-	commit=$(echo "$url" | sed -e "s/^.*@//")
-	# Clone the whole repo
-	rm -rf "$ref"
-	git clone --quiet "$repo" "$ref"
-	# Use the fully qualified encoded URL as the directory name
-	# It's pretty darn long, but it should be guaranteed unique, and it's very informative...
-	cd "$ref"
-	# Rewind to the precise commit
-	git checkout --quiet "$commit"
-	cd - 2>&1 >/dev/null
+	case "$url" in
+		git+*)
+			# Strip the leading git+
+			url=$(echo "$url" | sed -e "s/^git+//")
+			# Extract the repo name (before the commit hash)
+			repo=$(echo "$url" | sed -e "s/@.*$//")
+			# Extract the commit hash
+			commit=$(echo "$url" | sed -e "s/^.*@//")
+			# Clone the whole repo (this can be a lot -- and you might get throttled)
+			# Use the fully qualified encoded URL as the directory name
+			# It's pretty darn long, but it should be guaranteed unique, and it's very informative...
+			rm -rf "$ref" && git clone --quiet "$repo" "$ref"
+			cd "$ref"
+			# Rewind back to the exact specified commit in the sbom
+			git checkout --quiet "$commit"
+			cd - 2>&1 >/dev/null
+		;;
+		https*)
+			# Get the checksum
+			checksum_encoded=$(grep "checksum=.*$ref" "$sbom" | sed -e "s/.*checksum=//" -e "s/&.*$//")
+			checksum=$(urldecode "$checksum_encoded")
+			checksum_method=$(echo "$checksum" | sed -e "s/:.*$//")
+			checksum_hash=$(echo "$checksum" | sed -e "s/^.*://")
+			cmd="$checksum_method""sum"
+			type "$cmd" 2>&1 >/dev/null || error "Please install [$cmd]"
+			rm -rf "$ref" && mkdir -p "$ref"
+			cd "$ref"
+			wget -q "$url"
+			(echo "$checksum_hash" | $cmd * 2>&1 >/dev/null) || error "Checksum does not match [$(basename $PWD)] != [$checksum_hash]"
+			tar xf *
+			cd - 2>&1 >/dev/null
+		;;
+		*)
+		;;
+	esac
 done
