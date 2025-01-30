@@ -29,7 +29,7 @@ urldecode() { : "${*//+/ }"; echo -e "${_//%/\\x}"; }
 
 usage() {
 	echo "
-$0 [OPTIONS] IMAGE1[:TAG]
+$0 [OPTIONS] IMAGE[:TAG]
 
 Options:
  -p|--platform [amd64|arm64]	Default = amd64
@@ -41,10 +41,10 @@ Image:		Image short name, as in the * in: cgr.dev/chainguard/*
 		  - openjdk
 		Default tag = :latest
 
-This tool will create a new directory in your present working directory called sources/
-It will then download the SBOM associated with your specified image, and then
-use git to clone all upstream source repos, and checkout at the specific
-commit used in the image.
+This tool will create a new directory in your present working directory called
+sources/  It will then download the SBOM associated with your specified image,
+and then fetch all upstream sources with git and/or wget, at the specific
+commit used in the image (git), or checked against a checksum (wget).
 "
 }
 
@@ -86,9 +86,7 @@ cosign download attestation \
   jq '.payload | @base64d | fromjson | .predicate' > "$sbom"
 info "Fetched sbom [$sbom]"
 
-# TODO: jq would be better here, obviously
-# TODO: This only handles git, currently; this needs to handle download_url via curl/wget (verifying checksums, too)
-#for ref in $(grep "[\"]referenceLocator[\"]: .*vcs_url" "$sbom" | sed -e "s/.*\?vcs_url=git%2B//" -e "s/\",$//"); do
+# TODO: jq would be better here, obviously, but I don't speak jq...
 for ref in $(grep "[\"]referenceLocator[\"]: .*_url=" "$sbom" | sed -e "s/^.*=//" -e "s/\",$//"); do
 	url=$(urldecode "$ref")
 	info "Found url [$url]"
