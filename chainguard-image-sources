@@ -60,21 +60,22 @@ git_checkout() {
 	info "Cloning repo [$repo]"
 	[ "$DRYRUN" = "1" ] && return
 	# If we already have a clean git tree, then we can skip the clone (helps with re-runs)
-	if [ -d "$ref" ] && cd "$ref" && git status 2>&1 >/dev/null; then
+	if [ -d "$ref" ] && cd "$DIR/$ref" && git status 2>&1 >/dev/null; then
 		info "Already have a clean working repo at [$repo]"
 	else
 		# Directory is busted, or doesn't exist, so clone fresh from source
+		info "Need a clean working repo at [$repo]"
 		rm -rf "$ref" && git clone "$repo" "$ref"
-		cd "$ref"
+		cd "$DIR/$ref"
 	fi
 	# Rewind back to the exact specified commit in the sbom
 	git checkout "$commit"
-	cd - 2>&1 >/dev/null
+	cd "$DIR" 2>&1 >/dev/null
 }
 
 checkdeps
-platform="amd64"
 DRYRUN=0
+platform="amd64"
 # Handle command line options
 while [ ! -z "$1" ]; do
 	case "$1" in
@@ -98,8 +99,9 @@ while [ ! -z "$1" ]; do
 done
 
 # Make a directory to work in
-mkdir -p sources/"$image-$platform"
-cd sources/"$image-$platform"
+mkdir -p ./sources/"$image-$platform"
+cd ./sources/"$image-$platform"
+DIR="$PWD"
 
 sbom="$image-$platform.sbom.spdx"
 info "Fetching sbom [$platform/$image]"
@@ -125,20 +127,32 @@ for ref in $(grep "[\"]referenceLocator[\"]: " "$sbom" | sed -e "s/\",$//" -e "s
 			# Strip the leading data
 			url=$(echo "$url" | sed -e "s/^.*download_url=//")
 			# Get the checksum
-			checksum_encoded=$(grep "checksum=.*$ref" "$sbom" | sed -e "s/.*checksum=//" -e "s/&.*$//")
+			checksum_encoded=$(grep "$ref" "$sbom" | sed -e "s/.*checksum=//" -e "s/&.*$//")
 			checksum=$(urldecode "$checksum_encoded")
 			checksum_method=$(echo "$checksum" | sed -e "s/:.*$//")
 			checksum_hash=$(echo "$checksum" | sed -e "s/^.*://")
 			cmd="$checksum_method""sum"
+			target_filename=$(basename "$url")
 			type "$cmd" 2>&1 >/dev/null || error "Please install [$cmd]"
-			info "Downloading archive [$url]"
+			info "Checking for local archive [$url]"
 			[ "$DRYRUN" = "1" ] && continue
-			rm -rf "$ref" && mkdir -p "$ref"
-			cd "$ref"
-			wget -q "$url"
-			(echo "$checksum_hash" | $cmd * 2>&1 >/dev/null) || error "Checksum does not match [$(basename $PWD)] != [$checksum_hash]"
-			tar xf *
-			cd - 2>&1 >/dev/null
+			info "Examining checksum [$checksum_hash] on [$target_filename]..."
+			if [ -d "$ref" ] && cd "$ref" && [ -f "$target_filename" ] && echo "$checksum_hash" | $cmd $target_filename 2>&1 >/dev/null; then
+				info "Already have a clean download of [$url]"
+				cd "$DIR/$ref"
+			else
+				# File is busted, or doesn't exist, so download a fresh one
+				rm -rf "$DIR/$ref" && mkdir -p "$DIR/$ref"
+				cd "$DIR/$ref"
+				info "Downloading archive [$url]"
+				wget -q --continue --timestamping -O "$target_filename" "$url"
+				(echo "$checksum_hash" | $cmd $target_filename 2>&1 >/dev/null) || error "Checksum does not match [$(basename $PWD)] != [$checksum_hash]"
+			fi
+			info "Extracting archive [$target_filename]"
+			rm -rf "$DIR/$ref/*/"
+			cd "$DIR/$ref"
+			tar xf "$DIR/$ref/"*tar*
+			cd "$DIR" 2>&1 >/dev/null
 		;;
 		pkg:github/*)
 			# Strip the leading data
