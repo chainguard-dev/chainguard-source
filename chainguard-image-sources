@@ -28,6 +28,9 @@ $0 [OPTIONS] [ IMAGE[:TAG] | SBOM.spdx.json ]
 Options:
  -p|--platform [amd64|arm64]	Default = amd64
  --dry-run			Dry run (skip actual source downloads)
+ -y|--yes			Automatically answer "y" to acknowledge the
+ 				warning prompt that this tool will use a lot of
+				network and disk
 
 Image:		Image short name, as in the * in: cgr.dev/chainguard/*
 		  - wolfi-base:latest
@@ -84,7 +87,8 @@ git_checkout() {
 
 checkdeps
 DRYRUN=0
-platform="amd64"
+YES=0
+PLATFORM="amd64"
 # Handle command line options
 while [ ! -z "$1" ]; do
 	case "$1" in
@@ -92,38 +96,76 @@ while [ ! -z "$1" ]; do
 			DRYRUN=1
 			shift
 		;;
+		-y|--yes)
+			YES=1
+			shift
+		;;
 		-p|--platform)
-			platform="$2"
+			PLATFORM="$2"
 			shift 2
 		;;
 		-h|--help)
+			YES=1
 			usage
 			exit 0
 		;;
 		*)
-			target="$1"
+			TARGET="$1"
 			shift
 		;;
 	esac
 done
 
-# Handle target (local sbom file or image name to fetch sbom)
-if [ -f "$target" ]; then
+if [ "$YES" != "1" ]; then
+	# Warn that this tool may consume a lot of network and disk
+	echo
+	echo "This tool will consume a lot of network and disk, as it fetches full"
+	echo "git source code repositories and source archive files from remote"
+	echo "servers (outside of chainguard.dev)."
+	echo
+	echo "You will likely need several GB of free disk space in your current"
+	echo "working directory [$(pwd)]:"
+	df -h .
+	echo
+	echo "And this will consume a lot of network bandwith."
+	echo "Your connection may be throttled by the remote servers."
+	echo
+	while true; do
+		echo -n "Do you want to continue? [y/n]: "
+		read -n1 answer
+		case "$answer" in
+			y|Y)
+				echo
+				break
+			;;
+			*)
+				echo
+				exit 1
+			;;
+		esac
+	done
+fi
+
+# Handle target sbom
+if [ -f "$TARGET" ]; then
+	# Target is a local file
 	# Make a directory to work in
-	mkdir -p ./sources/"$(basename $target)"
-	cd ./sources/"$(basename $target)"
+	mkdir -p ./sources/"$(basename $TARGET)"
+	cd ./sources/"$(basename $TARGET)"
 	DIR=$(pwd)
-	sbom="$DIR/$(basename $target)"
-	cat "$target" > "$sbom"
+	sbom="$DIR/$(basename $TARGET)"
+	cat "$TARGET" > "$sbom"
 else
+	# Try to determine and retrieve sbom over network
 	# Make a directory to work in
-	mkdir -p ./sources/"$image-$platform"
-	cd ./sources/"$image-$platform"
+	image="$TARGET"
+	mkdir -p ./sources/"$image-$PLATFORM"
+	cd ./sources/"$image-$PLATFORM"
 	DIR=$(pwd)
-	sbom="$DIR/$image-$platform.sbom.spdx.json"
-	info "Fetching sbom [$platform/$image]"
+	sbom="$DIR/$image-$PLATFORM.sbom.spdx.json"
+	info "Fetching sbom [$PLATFORM/$image]"
 	cosign download attestation \
-	  --platform linux/$platform \
+	  --platform linux/$PLATFORM \
 	  --predicate-type=https://spdx.dev/Document \
 	  cgr.dev/chainguard/$image | \
 	  jq '.payload | @base64d | fromjson | .predicate' > "$sbom"
