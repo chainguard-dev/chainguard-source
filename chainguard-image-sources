@@ -1,17 +1,5 @@
 #!/bin/bash
 
-# This tool is implemented in shell script to provide maximum transparency in how
-# it works and for the ease of extensibility by its users.
-#
-# The goal is for Chainguard customers to easily be able to the exact
-# source code in Chainguard images
-#
-# Note that this script often download several GB of source code, even for the
-# most basic images.
-#
-# This may consume a lot of network bandwidth and disk, and you may be
-# throttled by upstream source repository servers.
-
 set -e
 
 error() {
@@ -35,7 +23,7 @@ urldecode() { : "${*//+/ }"; echo -e "${_//%/\\x}"; }
 
 usage() {
 	echo "
-$0 [OPTIONS] [ IMAGE[:TAG] | /path/to/file.sbom.spd ]
+$0 [OPTIONS] [ IMAGE[:TAG] | SBOM.spdx.json ]
 
 Options:
  -p|--platform [amd64|arm64]	Default = amd64
@@ -47,10 +35,25 @@ Image:		Image short name, as in the * in: cgr.dev/chainguard/*
 		  - openjdk
 		Default tag = :latest
 
-This tool will create a new directory in your present working directory called
-sources/  It will then download the SBOM associated with your specified image,
-and then fetch all upstream sources with git and/or wget, at the specific
-commit used in the image (git), or checked against a checksum (wget).
+SBOM.spdx.json:	Path to a Chainguard JSON SPDX file name
+
+Notes:
+  This tool will create a new directory in your present working directory called
+  sources/  It will then download the SBOM associated with your specified image,
+  and then fetch all upstream sources with git and/or wget, at the specific
+  commit used in the image (git), or checked against a checksum (wget).
+
+  This tool is implemented in shell script to provide maximum transparency in how
+  it works and for the ease of extensibility by its users.
+
+  The goal is for Chainguard customers to easily be able to the exact
+  source code in Chainguard images
+
+  Note that this script often download several GB of source code, even for the
+  most basic images.
+
+  This may consume a lot of network bandwidth and disk, and you may be
+  throttled by upstream source repository servers.
 "
 }
 
@@ -98,25 +101,35 @@ while [ ! -z "$1" ]; do
 			exit 0
 		;;
 		*)
-			image="$1"
+			target="$1"
 			shift
 		;;
 	esac
 done
 
-# Make a directory to work in
-mkdir -p ./sources/"$image-$platform"
-cd ./sources/"$image-$platform"
-DIR="$PWD"
+# Handle target (local sbom file or image name to fetch sbom)
+if [ -f "$target" ]; then
+	# Make a directory to work in
+	mkdir -p ./sources/"$(basename $target)"
+	cd ./sources/"$(basename $target)"
+	DIR=$(pwd)
+	sbom="$DIR/$(basename $target)"
+	cat "$target" > "$sbom"
+else
+	# Make a directory to work in
+	mkdir -p ./sources/"$image-$platform"
+	cd ./sources/"$image-$platform"
+	DIR=$(pwd)
+	sbom="$DIR/$image-$platform.sbom.spdx.json"
+	info "Fetching sbom [$platform/$image]"
+	cosign download attestation \
+	  --platform linux/$platform \
+	  --predicate-type=https://spdx.dev/Document \
+	  cgr.dev/chainguard/$image | \
+	  jq '.payload | @base64d | fromjson | .predicate' > "$sbom"
+	info "Fetched sbom [$sbom]"
+fi
 
-sbom="$image-$platform.sbom.spdx"
-info "Fetching sbom [$platform/$image]"
-cosign download attestation \
-  --platform linux/$platform \
-  --predicate-type=https://spdx.dev/Document \
-  cgr.dev/chainguard/$image | \
-  jq '.payload | @base64d | fromjson | .predicate' > "$sbom"
-info "Fetched sbom [$sbom]"
 
 # TODO: jq would be better here, obviously, but I don't speak jq...
 for ref in $(grep "[\"]referenceLocator[\"]: " "$sbom" | sed -e "s/\",$//" -e "s/^.*\"//"); do
@@ -152,7 +165,7 @@ for ref in $(grep "[\"]referenceLocator[\"]: " "$sbom" | sed -e "s/\",$//" -e "s
 				cd "$DIR/$ref"
 				info "Downloading archive [$url]"
 				wget -q --continue --timestamping -O "$target_filename" "$url"
-				(echo "$checksum_hash" | $cmd $target_filename 2>&1 >/dev/null) || error "Checksum does not match [$(basename $PWD)] != [$checksum_hash]"
+				(echo "$checksum_hash" | $cmd $target_filename 2>&1 >/dev/null) || error "Checksum does not match [$(basename $(pwd))] != [$checksum_hash]"
 			fi
 			info "Extracting archive [$target_filename]"
 			rm -rf "$DIR/$ref/*/"
