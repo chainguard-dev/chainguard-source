@@ -1,5 +1,17 @@
 #!/bin/bash
 
+# This tool is implemented in shell script to provide maximum transparency in how
+# it works and for the ease of extensibility by its users.
+#
+# The goal is for Chainguard customers to easily be able to the exact
+# source code in Chainguard images
+#
+# Note that this script often download several GB of source code, even for the
+# most basic images.
+#
+# This may consume a lot of network bandwidth and disk, and you may be
+# throttled by upstream source repository servers.
+
 set -e
 
 error() {
@@ -13,15 +25,9 @@ info() {
 
 # Check dependencies
 checkdeps() {
-	type bunzip2 2>&1 >/dev/null || error "Please install [bunzip2]."
-	type cosign 2>&1 >/dev/null || error "Please install [cosign]."
-	type jq 2>&1 >/dev/null || error "Please install [jq]."
-	type git 2>&1 >/dev/null || error "Please install [git]."
-	type gzip 2>&1 >/dev/null || error "Please install [gzip]."
-	type sha512sum 2>&1 >/dev/null || error "Please install [sha512sum]."
-	type tar 2>&1 >/dev/null || error "Please install [tar]."
-	type wget 2>&1 >/dev/null || error "Please install [wget]."
-	type xz 2>&1 >/dev/null || error "Please install [xz]."
+	for i in bunzip2 cosign jq git gzip sha512sum tar wget xz; do
+		type $i 2>&1 >/dev/null || error "Please install [$i]."
+	done
 }
 
 # Decode URLs
@@ -29,7 +35,7 @@ urldecode() { : "${*//+/ }"; echo -e "${_//%/\\x}"; }
 
 usage() {
 	echo "
-$0 [OPTIONS] IMAGE[:TAG]
+$0 [OPTIONS] [ IMAGE[:TAG] | /path/to/file.sbom.spd ]
 
 Options:
  -p|--platform [amd64|arm64]	Default = amd64
