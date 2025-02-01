@@ -1,5 +1,5 @@
 # chainguard-source
-Download an SBOM and fetch all image sources associated with a Chainguard iamge.
+Download an SBOM and fetch all image sources associated with a Chainguard image.
 
 # Example usage
 
