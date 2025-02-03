@@ -173,8 +173,7 @@ else
 fi
 
 
-# TODO: jq would be better here, obviously, but I don't speak jq...
-for ref in $(grep "[\"]referenceLocator[\"]: " "$sbom" | sed -e "s/\",$//" -e "s/^.*\"//"); do
+for ref in $(jq < "$sbom" -r '.packages[].externalRefs[].referenceLocator'); do
 	url=$(urldecode "$ref")
 	info "Found url [$url]"
 	# Handle various strategies for fetching sources
