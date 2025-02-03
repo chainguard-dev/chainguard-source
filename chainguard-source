@@ -2,25 +2,6 @@
 
 set -e
 
-error() {
-	echo "ERROR: $@" 1>&2
-	exit 1
-}
-
-info() {
-	echo "INFO: $@" 1>&2
-}
-
-# Check dependencies
-checkdeps() {
-	for i in bunzip2 cosign jq git gzip sha512sum tar wget xz; do
-		type $i 2>&1 >/dev/null || error "Please install [$i]."
-	done
-}
-
-# Decode URLs
-urldecode() { : "${*//+/ }"; echo -e "${_//%/\\x}"; }
-
 usage() {
 	echo "
 $0 [OPTIONS] [ IMAGE[:TAG] | SBOM.spdx.json ]
@@ -59,6 +40,25 @@ Notes:
   throttled by upstream source repository servers.
 "
 }
+
+error() {
+	echo "ERROR: $@" 1>&2
+	exit 1
+}
+
+info() {
+	echo "INFO: $@" 1>&2
+}
+
+# Check dependencies
+checkdeps() {
+	for i in bunzip2 cosign jq git gzip sha512sum tar wget xz; do
+		type $i 2>&1 >/dev/null || error "Please install [$i]."
+	done
+}
+
+# Decode URLs
+urldecode() { : "${*//+/ }"; echo -e "${_//%/\\x}"; }
 
 git_checkout() {
 	local url="$1"
