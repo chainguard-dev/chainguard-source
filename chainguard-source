@@ -16,20 +16,20 @@ Options:
  				warning prompt that this tool will use a lot of
 				network and disk
 
-Image:		Image short name, as in the * in: cgr.dev/chainguard/*
+IMAGE:		Image short name, as in the * in: cgr.dev/chainguard/*
 		  - wolfi-base:latest
 		  - python:3.11
 		  - openjdk
 		Default tag = :latest
 
-Package:	Chaingaurd package short name, as in 'apk add FOO'
+PACKAGE:	Chaingaurd package short name, as in 'apk add FOO'
 
 SBOM.spdx.json:	Path to a Chainguard JSON SPDX file name
 
 Notes:
   This tool will create a new directory in your present working directory called
-  sources/  It will then download the SBOM associated with your specified image,
-  package, or sbom and then fetch all upstream sources with git and/or wget,
+  sources/  It will then download the SBOM associated with your specified IMAGE,
+  PACKAGE, or SBOM and then fetch all upstream sources with git and/or wget,
   at the specific commit used in the image (git), or checked against a checksum
   (wget).
 
@@ -95,18 +95,18 @@ warn_about_resources() {
 	fi
 }
 
-# Handle our target sbom
+# Handle our target SBOM
 handle_sbom() {
 	local sbom="$1"
 	local ref
-	# Find all reference locators in the target sbom
+	# Find all reference locators in the target SBOM
 	for ref in $(get_refs "$sbom"); do
-		# Handle each reference locator in the target sbom
+		# Handle each reference locator in the target SBOM
 		handle_ref "$ref" "$sbom"
 	done
 }
 
-# Find all reference locator URLs in a target sbom
+# Find all reference locator URLs in a target SBOM
 get_refs() {
 	local sbom="$1"
 	jq <"$sbom" -r '.packages[].externalRefs[].referenceLocator'
@@ -166,10 +166,10 @@ handle_ref() {
 				# Recursive reference, so escape!
 				return
 			else
-				# Get the apk, extract the sbom, and then fetch sources in sbom
+				# Get the apk, extract the SBOM, and then fetch sources in SBOM
 				info "Fetching APK in order to extract SBOM [$ref]"
 				package_to_sbom "$ref" "$WORK_DIR/$ref.sbom.spdx.json"
-				info "Fetched sbom [$sbom]"
+				info "Fetched SBOM [$sbom]"
 				handle_sbom "$WORK_DIR/$ref.sbom.spdx.json"
 			fi
 		;;
@@ -202,7 +202,7 @@ git_checkout() {
 		info "Need a clean working repo at [$repo]"
 		rm -rf "$WORK_DIR/$ref" && git clone "$repo" "$WORK_DIR/$ref"
 	fi
-	# Rewind back to the exact specified commit in the sbom
+	# Rewind back to the exact specified commit in the SBOM
 	git -C "$WORK_DIR/$ref" checkout "$commit"
 }
 
@@ -254,7 +254,7 @@ package_to_sbom() {
 	local apk_file="$WORK_DIR/artifacts/"$(basename "$url")
 	info "Fetching [$url]"
 	wget --continue -O "$apk_file" "$url"
-	info "Extracting sbom from [$apk_file] to [$sbom]"
+	info "Extracting SBOM from [$apk_file] to [$sbom]"
 	mkdir -p $(dirname "$sbom")
 	tar zxOf "$apk_file" --wildcards "var/lib/db/sbom/*.spdx.json" 2>/dev/null > "$sbom"
 }
