@@ -23,7 +23,7 @@ IMAGE:		Image short name, as in the * in: cgr.dev/chainguard/*
 		  - openjdk
 		Default tag = :latest
 
-PACKAGE:	Chaingaurd package short name, as in 'apk add FOO'
+PACKAGE:	Chainguard package short name, as in 'apk add FOO'
 
 SBOM.spdx.json:	Path to a Chainguard JSON SPDX file name
 
@@ -38,9 +38,9 @@ Notes:
   how it works and for the ease of extensibility by its users.
 
   The goal is for Chainguard customers to easily be able to the exact
-  source code in Chainguard images
+  source code in Chainguard images.
 
-  Note that this script often download several GB of source code, even for the
+  Note that this script often downloads several GB of source code, even for the
   most basic images.
 
   This may consume a lot of network bandwidth and disk, and you may be
