@@ -244,7 +244,7 @@ package_to_sbom() {
 				pkg_name="$package"
 				pkg_version=$(grep -A1 "^P:$pkg_name$" "$WORK_DIR/artifacts/APKINDEX" | grep "^V:" | sed -e "s/^V://" | sort -V | tail -n1)
 				url="https://packages.wolfi.dev/os/$pkg_arch/$pkg_name-$pkg_version.apk"
-			elif echo "$package" | grep -q "-r[0-9]+$"; then
+			elif echo "$package" | grep -q '\-r[0-9]\+$'; then
 				# Package name ends in an epoch, so let's assume this one includes a precise version
 				url="https://packages.wolfi.dev/os/$pkg_arch/$package.apk"
 			else
