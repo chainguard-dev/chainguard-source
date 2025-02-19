@@ -8,7 +8,8 @@ usage() {
 $0 [OPTIONS] [ -i|--image IMAGE[:TAG] | -p|--package PACKAGE | -s|--sbom SBOM.spdx.json ]
 
 Options:
- -i|--image IMAGE[:TAG]		target image from cgr.dev to fetch sources
+ -i|--image IMAGE[:TAG]		target image to fetch sources
+				if unspecified, will prepend cgr.dev/chainguard/IMAGE[:TAG]
  -p|--package PACKAGE		target wolfi package to fetch sources
  -s|--sbom SBOM.spdx.json	target sbom to process, fetching all referenced sources
  -a|--arch [amd64|arm64]	Default = amd64
@@ -21,7 +22,8 @@ IMAGE:		Image short name, as in the * in: cgr.dev/chainguard/*
 		  - wolfi-base:latest
 		  - python:3.11
 		  - openjdk
-		Default tag = :latest
+		Or, fully qualified, as in: cgr.dev/foo/python-fips
+		Default tag=:latest if unspecified
 
 PACKAGE:	Chainguard package short name, as in 'apk add FOO'
 
@@ -326,15 +328,22 @@ fi
 if [ ! -z "$IMAGE" ]; then
 	# Try to determine and retrieve sbom over network
 	# Make a directory to work in
-	image="$IMAGE"
-	WORK_DIR="$SOURCES_DIR/$image-$ARCH"
+	case "$IMAGE" in
+		*/*)
+			image_url="$IMAGE"
+		;;
+		*)
+			image_url="cgr.dev/chainguard/$IMAGE"
+		;;
+	esac
+	WORK_DIR="$SOURCES_DIR/$image_url-$ARCH"
 	mkdir -p "$WORK_DIR"/sboms "$WORK_DIR"/artifacts
-	sbom="$WORK_DIR/sboms/$image-$ARCH.sbom.spdx.json"
-	info "Fetching sbom [$ARCH/$image]"
+	sbom="$WORK_DIR/sboms/$image_url-$ARCH.sbom.spdx.json"
+	info "Fetching sbom [$ARCH/$image_url]"
 	cosign download attestation \
 	  --platform linux/$ARCH \
 	  --predicate-type=https://spdx.dev/Document \
-	  cgr.dev/chainguard/$image | \
+	  $image_url | \
 	  jq '.payload | @base64d | fromjson | .predicate' > "$sbom"
 	info "Fetched sbom [$sbom]"
 	handle_sbom "$sbom"
