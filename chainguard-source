@@ -9,7 +9,6 @@ $0 [OPTIONS] [ -i|--image IMAGE[:TAG] | -p|--package PACKAGE | -s|--sbom SBOM.sp
 
 Options:
  -i|--image IMAGE[:TAG]		target image to fetch sources
-				if unspecified, will prepend cgr.dev/chainguard/IMAGE[:TAG]
  -p|--package PACKAGE		target wolfi package to fetch sources
  -s|--sbom SBOM.spdx.json	target sbom to process, fetching all referenced sources
  -a|--arch [amd64|arm64]	Default = amd64
@@ -18,11 +17,7 @@ Options:
  				warning prompt that this tool will use a lot of
 				network and disk
 
-IMAGE:		Image short name, as in the * in: cgr.dev/chainguard/*
-		  - wolfi-base:latest
-		  - python:3.11
-		  - openjdk
-		Or, fully qualified, as in: cgr.dev/foo/python-fips
+IMAGE:		Image name, as: cgr.dev/chainguard/python:latest
 		Default tag=:latest if unspecified
 
 PACKAGE:	Chainguard package short name, as in 'apk add FOO'
@@ -328,14 +323,7 @@ fi
 if [ ! -z "$IMAGE" ]; then
 	# Try to determine and retrieve sbom over network
 	# Make a directory to work in
-	case "$IMAGE" in
-		*/*)
-			image_url="$IMAGE"
-		;;
-		*)
-			image_url="cgr.dev/chainguard/$IMAGE"
-		;;
-	esac
+	image_url="$IMAGE"
 	WORK_DIR="$SOURCES_DIR/$image_url-$ARCH"
 	mkdir -p "$WORK_DIR"/sboms "$WORK_DIR"/artifacts
 	sbom="$WORK_DIR/sboms/$image_url-$ARCH.sbom.spdx.json"
