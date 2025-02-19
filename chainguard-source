@@ -324,10 +324,10 @@ if [ ! -z "$IMAGE" ]; then
 	# Try to determine and retrieve sbom over network
 	# Make a directory to work in
 	image_url="$IMAGE"
-	WORK_DIR="$SOURCES_DIR/$image_url-$ARCH"
+	WORK_DIR="$SOURCES_DIR/$image_url"
 	mkdir -p "$WORK_DIR"/sboms "$WORK_DIR"/artifacts
-	sbom="$WORK_DIR/sboms/$image_url-$ARCH.sbom.spdx.json"
-	info "Fetching sbom [$ARCH/$image_url]"
+	sbom="$WORK_DIR/sboms/$image_url.sbom.spdx.json"
+	info "Fetching sbom [$ARCH] [$image_url]"
 	cosign download attestation \
 	  --platform linux/$ARCH \
 	  --predicate-type=https://spdx.dev/Document \
@@ -344,7 +344,7 @@ if [ ! -z "$PACKAGE" ]; then
 	WORK_DIR="$SOURCES_DIR/$(basename $package)"
 	mkdir -p "$WORK_DIR"/sboms "$WORK_DIR"/artifacts
 	sbom="$WORK_DIR/sboms/$package.sbom.spdx.json"
-	info "Fetching sbom [$ARCH/$package]"
+	info "Fetching sbom [$ARCH] [$package]"
 	package_to_sbom "$package" "$sbom"
 	info "Fetched sbom [$sbom]"
 	handle_sbom "$sbom"
