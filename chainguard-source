@@ -124,7 +124,8 @@ handle_ref() {
 		pkg:generic/*vcs_url=git+*)
 			# Strip the leading data
 			url=$(echo "$url" | sed -e "s/.*git+//")
-			git_checkout "$url"
+			local dest="$WORK_DIR"/$(echo "$ref" | sed -e "s:?:/:g")
+			git_checkout "$url" "$dest"
 		;;
 		pkg:generic/*download_url=*)
 			# Strip the leading data
@@ -185,6 +186,8 @@ handle_ref() {
 
 git_checkout() {
 	local ref="$1" repo= commit=
+	local dest="$2"
+	[ -z "$dest" ] && dest="$WORK_DIR/$ref"
 	case "$ref" in
 		pkg:github/*)
 			# Strip the leading data and extract the repo name (before the commit hash)
@@ -205,15 +208,15 @@ git_checkout() {
 	info "Cloning repo [$repo]"
 	[ "$DRYRUN" = "1" ] && return
 	# If we already have a clean git tree, then we can skip the clone (helps with re-runs)
-	if git -C "$WORK_DIR/$ref" status >/dev/null 2>&1 ; then
-		info "Already have a clean working repo [$repo] at [$WORK_DIR/$ref]"
+	if git -C "$dest" status >/dev/null 2>&1 ; then
+		info "Already have a clean working repo [$repo] at [$dest]"
 	else
 		# Directory is busted, or doesn't exist, so clone fresh from source
 		info "Need a clean working repo at [$repo]"
-		rm -rf "$WORK_DIR/$ref" && git clone "$repo" "$WORK_DIR/$ref"
+		rm -rf "$dest" && git clone "$repo" "$dest"
 	fi
 	# Rewind back to the exact specified commit in the SBOM
-	git -C "$WORK_DIR/$ref" checkout "$commit"
+	git -C "$dest" checkout "$commit"
 }
 
 package_to_sbom() {
