@@ -338,26 +338,26 @@ if [ ! -z "$IMAGE" ]; then
 	# Make a directory to work in
 	WORK_DIR="$SOURCES_DIR/$IMAGE"
 	mkdir -p "$WORK_DIR"/artifacts
-	sbom="$WORK_DIR/sboms/$IMAGE.sbom.spdx.json"
-	mkdir -p $(dirname "$sbom")
-	info "Fetching sbom [$ARCH] [$IMAGE]"
+	SBOM="$WORK_DIR/sboms/$IMAGE.sbom.spdx.json"
+	mkdir -p $(dirname "$SBOM")
+	info "Fetching SBOM [$ARCH] [$IMAGE]"
 	cosign download attestation \
 	  --platform linux/$ARCH \
 	  --predicate-type=https://spdx.dev/Document \
 	  $IMAGE | \
-	  jq '.payload | @base64d | fromjson | .predicate' > "$sbom"
-	info "Fetched sbom [$sbom]"
-	handle_sbom "$sbom"
+	  jq '.payload | @base64d | fromjson | .predicate' > "$SBOM"
+	info "Fetched SBOM [$SBOM]"
+	handle_sbom "$SBOM"
 fi
 
 # Handle target package
 if [ ! -z "$PACKAGE" ]; then
-	# Fetch package, extract sbom
+	# Fetch package, extract SBOM
 	WORK_DIR="$SOURCES_DIR/$PACKAGE"
 	mkdir -p "$WORK_DIR"/sboms "$WORK_DIR"/artifacts
-	sbom="$WORK_DIR/sboms/$PACKAGE.sbom.spdx.json"
-	info "Fetching sbom [$ARCH] [$PACKAGE]"
-	package_to_sbom "$PACKAGE" "$sbom"
-	info "Fetched sbom [$sbom]"
-	handle_sbom "$sbom"
+	SBOM="$WORK_DIR/sboms/$PACKAGE.sbom.spdx.json"
+	info "Fetching SBOM [$ARCH] [$PACKAGE]"
+	package_to_sbom "$PACKAGE" "$SBOM"
+	info "Fetched SBOM [$SBOM]"
+	handle_sbom "$SBOM"
 fi
