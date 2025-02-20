@@ -135,7 +135,11 @@ handle_ref() {
 			local checksum_method=$(echo "$checksum" | sed -e "s/:.*$//")
 			local checksum_hash=$(echo "$checksum" | sed -e "s/^.*://")
 			local cmd="$checksum_method""sum"
-			local target_filename="$WORK_DIR/artifacts/$(basename $url)"
+			local url_decoded=$(urldecode "$url")
+			local download_url_encoded=$(echo "$url" | sed -e "s/^.*&download_url=//")
+			local download_url=$(urldecode "$download_url_encoded")
+			local target_filename="$WORK_DIR"/$(echo "$ref" | sed -e "s/?.*$//")/"$download_url"
+			mkdir -p "$(dirname $target_filename)"
 			type "$cmd" 2>&1 >/dev/null || error "Please install [$cmd]"
 			info "Checking for local archive [$url]"
 			[ "$DRYRUN" = "1" ] && continue
@@ -151,12 +155,10 @@ handle_ref() {
 				(echo "$checksum_hash" | $cmd $target_filename 2>&1 >/dev/null) || error "Checksum [$checksum_hash] does not match for file [$target_filename]"
 			fi
 			info "Extracting archive [$target_filename]"
-			mkdir -p "$WORK_DIR/$ref"
-			tar xf "$target_filename" -C "$WORK_DIR/$ref"
+			tar xf "$target_filename" -C $(dirname "$target_filename")
 		;;
 		pkg:github/*)
-			# Strip the leading data
-			url=$(echo "$url" | sed -e "s|^pkg:github|https://github.com|")
+			info "Checking out [$url]"
 			git_checkout "$url"
 		;;
 		pkg:apk/wolfi*)
@@ -182,11 +184,21 @@ handle_ref() {
 }
 
 git_checkout() {
-	local url="$1"
-	# Extract the repo name (before the commit hash)
-	local repo=$(echo "$url" | sed -e "s/@.*$//")
+	local ref="$1" repo= commit=
+	case "$ref" in
+		pkg:github/*)
+			# Strip the leading data and extract the repo name (before the commit hash)
+			repo=$(echo "$ref" | sed -e "s|^pkg:github/||" -e "s/@.*$//")
+			# Fully qualify the git URL and use git over ssh for authentication to private repos
+			repo="git@github.com:$repo"
+		;;
+		*)
+			# Extract the repo name (before the commit hash)
+			repo=$(echo "$ref" | sed -e "s/@.*$//")
+		;;
+	esac
 	# Extract the commit hash
-	local commit=$(echo "$url" | sed -e "s/^.*@//" -e "s/#.*$//")
+	commit=$(echo "$ref" | sed -e "s/^.*@//" -e "s/#.*$//")
 	# Clone the whole repo (this can be a lot -- and you might get throttled)
 	# Use the fully qualified encoded URL as the directory name
 	# It's pretty darn long, but it should be guaranteed unique, and it's very informative...
@@ -314,6 +326,7 @@ if [ -f "$SBOM" ]; then
 	WORK_DIR="$SOURCES_DIR/$(basename $SBOM)"
 	mkdir -p "$WORK_DIR"/sboms "$WORK_DIR"/artifacts
 	sbom="$WORK_DIR/sboms/$(basename $SBOM)"
+	mkdir -p $(dirname "$sbom")
 	cat "$SBOM" > "$sbom"
 	info "Fetched sbom [$sbom]"
 	handle_sbom "$sbom"
@@ -323,15 +336,15 @@ fi
 if [ ! -z "$IMAGE" ]; then
 	# Try to determine and retrieve sbom over network
 	# Make a directory to work in
-	image_url="$IMAGE"
-	WORK_DIR="$SOURCES_DIR/$image_url"
-	mkdir -p "$WORK_DIR"/sboms "$WORK_DIR"/artifacts
-	sbom="$WORK_DIR/sboms/$image_url.sbom.spdx.json"
-	info "Fetching sbom [$ARCH] [$image_url]"
+	WORK_DIR="$SOURCES_DIR/$IMAGE"
+	mkdir -p "$WORK_DIR"/artifacts
+	sbom="$WORK_DIR/sboms/$IMAGE.sbom.spdx.json"
+	mkdir -p $(dirname "$sbom")
+	info "Fetching sbom [$ARCH] [$IMAGE]"
 	cosign download attestation \
 	  --platform linux/$ARCH \
 	  --predicate-type=https://spdx.dev/Document \
-	  $image_url | \
+	  $IMAGE | \
 	  jq '.payload | @base64d | fromjson | .predicate' > "$sbom"
 	info "Fetched sbom [$sbom]"
 	handle_sbom "$sbom"
@@ -340,12 +353,11 @@ fi
 # Handle target package
 if [ ! -z "$PACKAGE" ]; then
 	# Fetch package, extract sbom
-	package="$PACKAGE"
-	WORK_DIR="$SOURCES_DIR/$(basename $package)"
+	WORK_DIR="$SOURCES_DIR/$PACKAGE"
 	mkdir -p "$WORK_DIR"/sboms "$WORK_DIR"/artifacts
-	sbom="$WORK_DIR/sboms/$package.sbom.spdx.json"
-	info "Fetching sbom [$ARCH] [$package]"
-	package_to_sbom "$package" "$sbom"
+	sbom="$WORK_DIR/sboms/$PACKAGE.sbom.spdx.json"
+	info "Fetching sbom [$ARCH] [$PACKAGE]"
+	package_to_sbom "$PACKAGE" "$sbom"
 	info "Fetched sbom [$sbom]"
 	handle_sbom "$sbom"
 fi
