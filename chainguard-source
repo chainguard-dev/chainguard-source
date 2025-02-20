@@ -56,7 +56,7 @@ info() {
 
 # Check dependencies
 checkdeps() {
-	for i in bunzip2 cosign jq git gzip sha512sum tar wget xz; do
+	for i in bunzip2 cosign jq git gzip sha512sum ssh tar wget xz; do
 		type $i 2>&1 >/dev/null || error "Please install [$i]."
 	done
 }
