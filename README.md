@@ -5,9 +5,9 @@ Fetch the open source code related to Chainguard packages and images, as defined
 
 Fetch sources by image name and tag:
 ```
-$ chainguard-source --yes --image wolfi-base:latest
-$ chainguard-source -y -i python:latest
-$ chainguard-source -y -i jdk
+$ chainguard-source --yes --image cgr.dev/chainguard/wolfi-base:latest
+$ chainguard-source -y -i cgr.dev/chainguard/python:latest
+$ chainguard-source -y -i cgr.dev/chainguard/jdk
 ```
 
 Fetch sources by package name and version:
