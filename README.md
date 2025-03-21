@@ -1,6 +1,8 @@
 # chainguard-source
 Fetch the open source code related to Chainguard packages and images, as defined in the SBOMs.
 
+Note: This shell script is a prototype. It will hopefully work for you but your mileage may vary.
+
 # Example usage
 
 Fetch sources by image name and tag:
