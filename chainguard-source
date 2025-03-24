@@ -16,6 +16,9 @@ Options:
  -y|--yes			Automatically answer "y" to acknowledge the
  				warning prompt that this tool will use a lot of
 				network and disk
+ --use-ssh			Use Git over SSH instead of HTTPS for cloning GitHub repositories.
+				Use this flag if your SSH configuration is set up to access github.com
+				(required if you need to authenticate against private repositories)
 
 IMAGE:		Image name, as: cgr.dev/chainguard/python:latest
 		Default tag=:latest if unspecified
@@ -192,8 +195,14 @@ git_checkout() {
 		pkg:github/*)
 			# Strip the leading data and extract the repo name (before the commit hash)
 			repo=$(echo "$ref" | sed -e "s|^pkg:github/||" -e "s/@.*$//")
-			# Fully qualify the git URL and use git over ssh for authentication to private repos
-			repo="git@github.com:$repo"
+			# Choose between SSH and HTTPS based on the --use-ssh option
+			# HTTPS is the default behavior to improve the user experience by not
+			# requiring SSH configuration when cloning only public Git repositories
+			if [ "$USE_SSH" = "1" ]; then
+				repo="git@github.com:$repo"
+			else
+				repo="https://github.com/$repo"
+			fi
 		;;
 		*)
 			# Extract the repo name (before the commit hash)
@@ -280,6 +289,7 @@ ARCH="amd64"
 SOURCES_DIR="$(pwd)/sources"
 mkdir -p "$SOURCES_DIR"
 WORK_DIR=
+USE_SSH=0
 
 # Handle command line options
 while [ ! -z "$1" ]; do
@@ -311,6 +321,10 @@ while [ ! -z "$1" ]; do
 		;;
 		-y|--yes)
 			YES=1
+			shift
+		;;
+		--use-ssh)
+			USE_SSH=1
 			shift
 		;;
 		*)
