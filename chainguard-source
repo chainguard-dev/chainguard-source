@@ -100,7 +100,7 @@ warn_about_sources() {
 	echo "this tool will attempt to fetch sources from public repositories only."
 	echo "This should basically download all the source code of the open source"
 	echo "projects, but not anything else from the SBOM metadata such as APKs"
-	echo "or build-related metadata."
+	echo "from closed off repositories or build-related metadata."
 	echo
 	echo "If you wish to download everything, consider using the --privileged"
 	echo "option which might require special credentials."
