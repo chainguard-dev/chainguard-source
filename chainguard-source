@@ -199,10 +199,6 @@ handle_ref() {
 			fi
 		;;
 		pkg:apk/wolfi*)
-			if [ "$PRIVILEGED" = "0" ]; then
-				info "Skipping apk download [$url]"
-				return
-			fi
 			if [ "$sbom" = "$WORK_DIR/$ref.sbom.spdx.json" ]; then
 				# Recursive reference, so escape!
 				return
