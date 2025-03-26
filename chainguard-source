@@ -78,7 +78,7 @@ warn_about_resources() {
 		echo "Your connection may be throttled by the remote servers."
 		echo
 		while true; do
-			echo -n "Do you want to continue? [y/n]: "
+			echo -n "Do you want to continue? [y/N]: "
 			read -n1 answer
 			case "$answer" in
 				y|Y)
@@ -88,6 +88,35 @@ warn_about_resources() {
 				*)
 					echo
 					exit 1
+				;;
+			esac
+		done
+	fi
+}
+
+warn_about_sources() {
+	echo
+	echo "In the unprivileged mode of operation without the right credentials"
+	echo "this tool will attempt to fetch sources from public repositories only."
+	echo "This should basically download all the source code of the open source"
+	echo "projects, but not anything else from the SBOM metadata such as APKs"
+	echo "or build-related metadata."
+	echo
+	echo "If you wish to download everything, consider using the --privileged"
+	echo "option which might require special credentials."
+	echo
+	if [ "$YES" != "1" ]; then
+		while true; do
+			echo -n "Do you want to continue? [Y/n]: "
+			read -n1 answer
+			case "$answer" in
+				n|N)
+					echo
+					exit 1
+				;;
+				*)
+					echo
+					break
 				;;
 			esac
 		done
@@ -170,6 +199,10 @@ handle_ref() {
 			fi
 		;;
 		pkg:apk/wolfi*)
+			if [ "$PRIVILEGED" = "0" ]; then
+				info "Skipping apk download [$url]"
+				return
+			fi
 			if [ "$sbom" = "$WORK_DIR/$ref.sbom.spdx.json" ]; then
 				# Recursive reference, so escape!
 				return
@@ -182,7 +215,11 @@ handle_ref() {
 			fi
 		;;
 		pkg:oci/image*)
-			info "WARNING: OCI Image Download not yet handled; skipping [$url]"
+			if [ "$PRIVILEGED" = "0" ]; then
+				info "Skipping OCI Image download [$url]"
+				return
+			fi
+			info "WARNING: OCI Image download not yet handled; skipping [$url]"
 		;;
 		*)
 			# Strip the leading data
@@ -338,6 +375,11 @@ while [ ! -z "$1" ]; do
 done
 
 warn_about_resources
+
+# Print message about the limitations of the tool in this mode
+if [ "$PRIVILEGED" = "0" ]; then
+	warn_about_sources
+fi
 
 # Handle target sbom
 if [ -f "$SBOM" ]; then
