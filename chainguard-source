@@ -77,20 +77,18 @@ warn_about_resources() {
 		echo "And this will consume a lot of network bandwith."
 		echo "Your connection may be throttled by the remote servers."
 		echo
-		while true; do
-			echo -n "Do you want to continue? [y/N]: "
-			read -n1 answer
-			case "$answer" in
-				y|Y)
-					echo
-					break
-				;;
-				*)
-					echo
-					exit 1
-				;;
-			esac
-		done
+		echo -n "Do you want to continue? [y/N]: "
+		read -n1 answer
+		case "$answer" in
+			y|Y)
+				echo
+				break
+			;;
+			*)
+				echo
+				exit 1
+			;;
+		esac
 	fi
 }
 
@@ -106,20 +104,18 @@ warn_about_sources() {
 	echo "option which might require special credentials."
 	echo
 	if [ "$YES" != "1" ]; then
-		while true; do
-			echo -n "Do you want to continue? [Y/n]: "
-			read -n1 answer
-			case "$answer" in
-				n|N)
-					echo
-					exit 1
-				;;
-				*)
-					echo
-					break
-				;;
-			esac
-		done
+		echo -n "Do you want to continue? [Y/n]: "
+		read -n1 answer
+		case "$answer" in
+			n|N)
+				echo
+				exit 1
+			;;
+			*)
+				echo
+				break
+			;;
+		esac
 	fi
 }
 
