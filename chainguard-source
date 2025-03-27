@@ -12,6 +12,7 @@ Options:
  -p|--package PACKAGE		target wolfi package to fetch sources
  -s|--sbom SBOM.spdx.json	target sbom to process, fetching all referenced sources
  -a|--arch [amd64|arm64]	Default = amd64
+ -P|--privileged		Get sources from private repositories (requires git access)
  -d|--dry-run			Dry run (skip actual source downloads)
  -y|--yes			Automatically answer "y" to acknowledge the
  				warning prompt that this tool will use a lot of
@@ -76,20 +77,43 @@ warn_about_resources() {
 		echo "And this will consume a lot of network bandwith."
 		echo "Your connection may be throttled by the remote servers."
 		echo
-		while true; do
-			echo -n "Do you want to continue? [y/n]: "
-			read -n1 answer
-			case "$answer" in
-				y|Y)
-					echo
-					break
-				;;
-				*)
-					echo
-					exit 1
-				;;
-			esac
-		done
+		echo -n "Do you want to continue? [y/N]: "
+		read -n1 answer
+		case "$answer" in
+			y|Y)
+				echo
+			;;
+			*)
+				echo
+				exit 1
+			;;
+		esac
+	fi
+}
+
+warn_about_sources() {
+	echo
+	echo "In the unprivileged mode of operation without the right credentials"
+	echo "this tool will attempt to fetch sources from public repositories only."
+	echo "This should basically download all the source code of the open source"
+	echo "projects, but not anything else from the SBOM metadata such as APKs"
+	echo "from closed off repositories or build-related metadata."
+	echo
+	echo "If you wish to download everything, consider using the --privileged"
+	echo "option which might require special credentials."
+	echo
+	if [ "$YES" != "1" ]; then
+		echo -n "Do you want to continue? [Y/n]: "
+		read -n1 answer
+		case "$answer" in
+			n|N)
+				echo
+				exit 1
+			;;
+			*)
+				echo
+			;;
+		esac
 	fi
 }
 
@@ -159,8 +183,14 @@ handle_ref() {
 			tar xf "$target_filename" -C $(dirname "$target_filename")
 		;;
 		pkg:github/*)
-			info "Checking out [$url]"
-			git_checkout "$url"
+			# If we're not running in PRIVILEGED mode, then skip any pkg urls that end in .yaml
+			if [ "$PRIVILEGED" = "0" ] && echo "$url" | grep -q '\.yaml$'; then
+				info "Skipping private github repo [$url]"
+				return
+			else
+				info "Checking out [$url]"
+				git_checkout "$url"
+			fi
 		;;
 		pkg:apk/wolfi*)
 			if [ "$sbom" = "$WORK_DIR/$ref.sbom.spdx.json" ]; then
@@ -175,7 +205,11 @@ handle_ref() {
 			fi
 		;;
 		pkg:oci/image*)
-			info "WARNING: OCI Image Download not yet handled; skipping [$url]"
+			if [ "$PRIVILEGED" = "0" ]; then
+				info "Skipping OCI Image download [$url]"
+				return
+			fi
+			info "WARNING: OCI Image download not yet handled; skipping [$url]"
 		;;
 		*)
 			# Strip the leading data
@@ -193,7 +227,11 @@ git_checkout() {
 			# Strip the leading data and extract the repo name (before the commit hash)
 			repo=$(echo "$ref" | sed -e "s|^pkg:github/||" -e "s/@.*$//")
 			# Fully qualify the git URL and use git over ssh for authentication to private repos
-			repo="git@github.com:$repo"
+			if [ "$PRIVILEGED" = "1" ]; then
+				repo="git@github.com:$repo"
+			else
+				repo="https://github.com/$repo"
+			fi
 		;;
 		*)
 			# Extract the repo name (before the commit hash)
@@ -260,7 +298,8 @@ package_to_sbom() {
 				# Package name ends in an epoch, so let's assume this one includes a precise version
 				url="https://packages.wolfi.dev/os/$pkg_arch/$package.apk"
 			else
-				error "Cannot determine URL for APK to extract SBOM"
+				# Package might come from a different repository, or might not be available
+				info "WARNING! Cannot determine URL for APK to extract SBOM for $package. Possibly requires authorized access."
 			fi
 		;;
 	esac
@@ -277,6 +316,7 @@ checkdeps
 DRYRUN=0
 YES=0
 ARCH="amd64"
+PRIVILEGED=0
 SOURCES_DIR="$(pwd)/sources"
 mkdir -p "$SOURCES_DIR"
 WORK_DIR=
@@ -313,6 +353,10 @@ while [ ! -z "$1" ]; do
 			YES=1
 			shift
 		;;
+		-P|--privileged)
+			PRIVILEGED=1
+			shift
+		;;
 		*)
 			usage
 			exit 1
@@ -321,6 +365,11 @@ while [ ! -z "$1" ]; do
 done
 
 warn_about_resources
+
+# Print message about the limitations of the tool in this mode
+if [ "$PRIVILEGED" = "0" ]; then
+	warn_about_sources
+fi
 
 # Handle target sbom
 if [ -f "$SBOM" ]; then
