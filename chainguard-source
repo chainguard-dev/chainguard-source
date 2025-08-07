@@ -131,7 +131,7 @@ handle_sbom() {
 # Find all reference locator URLs in a target SBOM
 get_refs() {
 	local sbom="$1"
-	jq <"$sbom" -r '.packages[].externalRefs[].referenceLocator'
+	jq <"$sbom" -r '.packages[] | try .externalRefs[].referenceLocator'
 }
 
 # Decode URLs
