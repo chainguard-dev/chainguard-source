@@ -280,7 +280,10 @@ package_to_sbom() {
 			# Looks like a purl, reformat to a usable URL
 			pkg_name=$(echo "$package" | sed -e "s:^.*/::" -e "s:@.*$::")
 			pkg_version=$(echo "$package" | sed -e "s:^.*@::" -e "s:?.*$::")
-			pkg_arch=$(echo "$package" | sed -e "s:^.*=::")
+			if echo "$package" | grep -q "arch="; then
+				# override pkg_arch since we have one in the purl
+				pkg_arch=$(echo "$package" | grep -o "arch=[a-z0-9_]\+" | sed "s:.*=::")
+			fi
 			url="https://packages.wolfi.dev/os/$pkg_arch/$pkg_name-$pkg_version.apk"
 		;;
 		*)
