@@ -14,6 +14,17 @@ Options:
  -a|--arch [amd64|arm64]	Default = amd64
  -o|--org ORG			Chainguard org (e.g. example.com) for enterprise APK access
  -P|--privileged		Get sources from private repositories (requires git access)
+ --patches-only			Only fetch build configurations and the patches they
+				apply; skip the (very large) upstream source downloads
+ --no-mirror			Do not fall back to the public wolfi-dev/os mirror
+				for build configurations that cannot be resolved at
+				the exact commit named in the SBOM
+ --apk-repo URL			Additional APK repository to search, repeatable.
+				With --image this is read from the image's
+				/etc/apk/repositories; with --sbom there is nothing
+				to read it from, so pass it here. Packages missing
+				from every listed repository are then looked for in
+				the authenticated enterprise repository.
  -d|--dry-run			Dry run (skip actual source downloads)
  -y|--yes			Automatically answer "y" to acknowledge the
  				warning prompt that this tool will use a lot of
@@ -49,6 +60,36 @@ Notes:
   to specify your Chainguard organization (e.g. --org example.com). Requires
   chainctl to be installed and authenticated. When using --image with a
   cgr.dev/ORG/image URL the org is auto-detected from the image name.
+
+  Authentication uses a token scoped to the APK registry, which carries your
+  own entitlement -- it needs no additional permissions on the organization.
+  If you are not logged in, a device flow prints a URL to visit and the run
+  continues once you authenticate.
+
+  Where chainctl cannot run -- in a container or a CI job, since it keeps its
+  credentials in the system keyring -- set CHAINGUARD_TOKEN to a token minted
+  elsewhere:
+
+    $ CHAINGUARD_TOKEN=$(chainctl auth token --audience apk.cgr.dev)
+
+Patches:
+  Every Chainguard APK embeds the locked melange build configuration that
+  produced it, as .melange.yaml in the APK control section. That config names
+  every patch applied during the build. This tool extracts it and then tries
+  to retrieve the patch files themselves, in this order:
+
+    1. From a .patches.tar in the APK control section. This needs no source
+       repository access at all -- anyone entitled to pull the APK can read
+       the patches that were applied to it. Nothing ships this yet, so it is
+       skipped silently when absent.
+    2. From the melange build configuration repository referenced by the
+       SBOM, checked out at the exact build commit. Wolfi's is public and
+       needs no credentials; build configurations for enterprise packages
+       live in a private repository and resolve only with --privileged and
+       source repository access.
+
+  A summary of every patch, and where (or whether) its contents were
+  retrieved, is written to sources/.../patches/MANIFEST.txt.
 "
 }
 
@@ -152,12 +193,14 @@ handle_ref() {
 	# Handle various strategies for fetching sources
 	case "$url" in
 		pkg:generic/*vcs_url=git+*)
+			[ "$PATCHES_ONLY" = "1" ] && return
 			# Strip the leading data
 			url=$(echo "$url" | sed -e "s/.*git+//")
 			local dest="$WORK_DIR"/$(echo "$ref" | sed -e "s:?:/:g")
 			git_checkout "$url" "$dest"
 		;;
 		pkg:generic/*download_url=*)
+			[ "$PATCHES_ONLY" = "1" ] && return
 			# Strip the leading data
 			url=$(echo "$url" | sed -e "s/^.*download_url=//")
 			# Get the checksum
@@ -189,11 +232,16 @@ handle_ref() {
 			tar xf "$target_filename" -C $(dirname "$target_filename")
 		;;
 		pkg:github/*)
-			# If we're not running in PRIVILEGED mode, then skip any pkg urls that end in .yaml
-			if [ "$PRIVILEGED" = "0" ] && echo "$url" | grep -q '\.yaml$'; then
-				info "Skipping private github repo [$url]"
-				return
+			if echo "$url" | grep -q '\.yaml$'; then
+				# This is the melange build configuration for the package
+				# itself, and the patches applied during the build sit next
+				# to it. Always try to fetch it: Wolfi's config repo is
+				# public, so this resolves with no credentials at all. It
+				# only fails for the private enterprise config repos, and
+				# build_config_checkout records that as a gap.
+				build_config_checkout "$url" || true
 			else
+				[ "$PATCHES_ONLY" = "1" ] && return
 				info "Checking out [$url]"
 				git_checkout "$url"
 			fi
@@ -267,6 +315,291 @@ git_checkout() {
 	git -C "$dest" checkout "$commit"
 }
 
+# Derive the path of the locked melange config we extract alongside an SBOM
+config_for_sbom() {
+	echo "${1%.sbom.spdx.json}.melange.yaml"
+}
+
+# Where the patches for a given package get collected
+patchdir_for_pkg() {
+	echo "$WORK_DIR/patches/$1"
+}
+
+# Extract the locked melange build configuration that melange embeds in the
+# APK control section as .melange.yaml. Every Chainguard APK ships one, and it
+# records the exact patches applied during the build.
+extract_melange_config() {
+	local apk_file="$1"
+	local dest="$2"
+	mkdir -p "$(dirname "$dest")"
+	if tar zxOf "$apk_file" .melange.yaml 2>/dev/null > "$dest" && [ -s "$dest" ]; then
+		info "Extracted melange build config [$dest]"
+		return 0
+	fi
+	# Older APKs predate the embedded config; not fatal, we just can't
+	# enumerate the patch steps for this package.
+	rm -f "$dest"
+	info "WARNING: no .melange.yaml embedded in [$(basename $apk_file)]"
+	return 1
+}
+
+# Extract patches embedded in the APK control section, if any are present.
+#
+# This is the path that matters: it is the only one that works for a customer
+# holding an enterprise APK and no source repository access. Nothing ships
+# these yet, so their absence is the normal case and is not reported.
+#
+# The patches travel as a single flat .patches.tar. They cannot be a .patches/
+# directory: apk-tools rejects any control entry whose name contains a '/' and
+# refuses to install the package at all -- verified against both apk-tools
+# 2.14.10 ("archive does not contain expected data") and apk-tools 3.0.7 ("v2
+# package format error"). Flat entries of any size are fine; a 512KB control
+# payload installs without complaint on both.
+extract_embedded_patches() {
+	local apk_file="$1"
+	local outdir="$2"
+	local tmp= member=
+	tmp=$(mktemp)
+	for member in .patches.tar .patches.tar.gz; do
+		if tar zxOf "$apk_file" "$member" 2>/dev/null > "$tmp" && [ -s "$tmp" ]; then
+			mkdir -p "$outdir"
+			if tar xf "$tmp" -C "$outdir" 2>/dev/null; then
+				rm -f "$tmp"
+				# Patches shipped with the package came from the build that
+				# produced it, so they are exact, not a mirror copy.
+				echo "embedded" > "$outdir/.provenance"
+				info "Extracted embedded patches from APK control section [$outdir]"
+				return 0
+			fi
+		fi
+	done
+	rm -f "$tmp"
+	return 1
+}
+
+# Read the package name out of a locked melange config. This is the origin
+# package name, which is also the basename of the build configuration in the
+# source repository, so it lines up with the patch directory layout.
+melange_pkg_name() {
+	local config="$1"
+	have_yq || return 1
+	yq -r '.package.name // ""' "$config" 2>/dev/null | grep . || return 1
+}
+
+have_yq() {
+	type yq >/dev/null 2>&1
+}
+
+# List every patch filename applied by a melange build configuration, one per
+# line. Covers the top level pipeline, nested pipelines, and subpackages, and
+# both the 'patches:' list and quilt-style 'series:' files.
+melange_patch_list() {
+	local config="$1"
+	local dir="$2"
+	local series
+	[ -f "$config" ] || return 0
+	if ! have_yq; then
+		info "WARNING: yq not installed; cannot enumerate patch steps in [$config]"
+		return 0
+	fi
+	yq -r '[..] | map(select(tag == "!!map" and has("uses") and .uses == "patch")) | .[] | .with.patches // "" | select(. != "")' \
+		"$config" 2>/dev/null | tr ' \t' '\n\n' | sed -e '/^$/d'
+	# A quilt series file lists its patch filenames one per line. We can only
+	# expand it once we actually have the file in hand.
+	for series in $(yq -r '[..] | map(select(tag == "!!map" and has("uses") and .uses == "patch")) | .[] | .with.series // "" | select(. != "")' "$config" 2>/dev/null); do
+		if [ -n "$dir" ] && [ -f "$dir/$series" ]; then
+			sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$dir/$series"
+		else
+			echo "$series"
+		fi
+	done
+}
+
+# Check out the melange build configuration referenced by an SBOM and collect
+# the patches it applies.
+#
+# The SBOM reference looks like:
+#   pkg:github/wolfi-dev/os@<commit>#python-3.13.yaml
+#
+# Patch files live in a directory named after the configuration, right next to
+# it (wolfi-dev/os/python-3.13/*.patch), which is the layout melange itself
+# expects. Wolfi is public, so this needs no credentials. Build configurations
+# for enterprise packages live in a private repository, so this only resolves
+# for callers who have source access.
+build_config_checkout() {
+	local ref="$1"
+	local repo= commit= path= pkg= dest= supportdir= outdir=
+	repo=$(echo "$ref" | sed -e "s|^pkg:github/||" -e "s/@.*$//")
+	commit=$(echo "$ref" | sed -e "s/^.*@//" -e "s/#.*$//")
+	path=$(echo "$ref" | sed -e "s/^.*#//")
+	pkg=$(basename "$path" .yaml)
+	dest="$WORK_DIR/build-configs/$repo@$commit"
+	outdir=$(patchdir_for_pkg "$pkg")
+
+	info "Fetching build configuration [$repo@$commit] for [$pkg]"
+	[ "$DRYRUN" = "1" ] && return 0
+
+	local repo_url="https://github.com/$repo"
+	[ "$PRIVILEGED" = "1" ] && repo_url="git@github.com:$repo"
+	if shallow_checkout "$repo_url" "$commit" "$dest"; then
+		collect_from_checkout "$dest" "$path" "$pkg" "$outdir" "exact"
+		return 0
+	fi
+	info "WARNING: cannot read build config repo [$repo_url]"
+
+	# Public Wolfi packages are built out of a private monorepo, and their
+	# SBOMs point at it -- so even a wholly open source package's provenance
+	# reference is unresolvable for anyone outside Chainguard. The same build
+	# configurations and patches are mirrored in the public wolfi-dev/os
+	# repository, so fall back to that. The exact build commit does not exist
+	# there, so anything retrieved this way is marked as a mirror copy rather
+	# than as the exact source of the build.
+	if [ "$MIRROR_FALLBACK" = "1" ] && [ "$repo" != "$WOLFI_MIRROR" ]; then
+		local mdest="$WORK_DIR/build-configs/$WOLFI_MIRROR@HEAD"
+		info "Trying public mirror [$WOLFI_MIRROR] for [$pkg]"
+		if shallow_checkout "https://github.com/$WOLFI_MIRROR" "HEAD" "$mdest" \
+			&& [ -f "$mdest/$pkg.yaml" ]; then
+			collect_from_checkout "$mdest" "$pkg.yaml" "$pkg" "$outdir" "mirror"
+			return 0
+		fi
+		info "WARNING: [$pkg] not found in public mirror [$WOLFI_MIRROR]"
+	fi
+
+	# Nothing reachable, so the patch contents are unavailable. Record it
+	# rather than failing, so the manifest reports exactly what is missing.
+	info "WARNING: patches for [$pkg] unavailable"
+	PATCH_REPO_DENIED="$PATCH_REPO_DENIED$pkg $repo_url"$'\n'
+	return 1
+}
+
+# Copy a build configuration and the patches beside it out of a checkout, and
+# record where they came from so the manifest can distinguish patches taken
+# from the exact build commit from those taken from a public mirror.
+collect_from_checkout() {
+	local dest="$1"
+	local path="$2"
+	local pkg="$3"
+	local outdir="$4"
+	local provenance="$5"
+	local supportdir=
+	mkdir -p "$outdir"
+	[ -f "$dest/$path" ] && cp -a "$dest/$path" "$outdir/$pkg.yaml"
+	supportdir="$dest/$(dirname $path)/$pkg"
+	if [ -d "$supportdir" ]; then
+		info "Collecting patches for [$pkg] ($provenance)"
+		cp -a "$supportdir/." "$outdir/"
+	fi
+	# Patches that shipped inside the APK are already exact; do not downgrade
+	# them to 'mirror' just because we also consulted the mirror for the
+	# build configuration.
+	if [ "$(cat "$outdir/.provenance" 2>/dev/null)" != "embedded" ]; then
+		echo "$provenance" > "$outdir/.provenance"
+	fi
+	return 0
+}
+
+# Fetch exactly one commit from a repository. The build configuration repos
+# are large monorepos and a full clone is gigabytes of history for what is
+# usually a handful of patch files.
+shallow_checkout() {
+	local repo_url="$1"
+	local commit="$2"
+	local dest="$3"
+	if git -C "$dest" rev-parse --verify HEAD >/dev/null 2>&1; then
+		info "Already have build config checkout [$dest]"
+		return 0
+	fi
+	rm -rf "$dest"
+	mkdir -p "$dest"
+	git -C "$dest" init -q
+	git -C "$dest" remote add origin "$repo_url"
+	git -C "$dest" fetch -q --depth 1 origin "$commit" 2>/dev/null || return 1
+	git -C "$dest" checkout -q FETCH_HEAD 2>/dev/null || return 1
+	return 0
+}
+
+# Reconcile what the build configurations say was applied against what we
+# actually retrieved, and write it out as evidence.
+summarize_patches() {
+	local config= pkg= outdir= p= pbase= status= provenance=
+	local total=0 missing=0 mirrored=0
+	local manifest="$WORK_DIR/patches/MANIFEST.txt"
+	local rows=
+	[ -d "$WORK_DIR" ] || return 0
+	mkdir -p "$WORK_DIR/patches"
+	rows=$(mktemp)
+	while IFS= read -r config; do
+		[ -z "$config" ] && continue
+		pkg=$(melange_pkg_name "$config") || pkg=$(basename "$config" .melange.yaml)
+		outdir=$(patchdir_for_pkg "$pkg")
+		provenance="exact"
+		[ -f "$outdir/.provenance" ] && provenance=$(cat "$outdir/.provenance")
+		while IFS= read -r p; do
+			[ -z "$p" ] && continue
+			# Patch paths in a build configuration are relative to the build
+			# workspace, so they routinely start with ../; only the filename
+			# is meaningful for locating what we retrieved.
+			pbase=$(basename "$p")
+			if [ ! -f "$outdir/$pbase" ]; then
+				status="MISSING"
+			elif [ "$provenance" = "mirror" ]; then
+				status="MIRROR"
+			else
+				status="OK"
+			fi
+			printf '%-10s %-40s %s\n' "$status" "$pkg" "$pbase" >> "$rows"
+		done <<< "$(melange_patch_list "$config" "$outdir")"
+	done <<< "$(find "$WORK_DIR" -name '*.melange.yaml' 2>/dev/null | sort)"
+
+	# The same package is reached by more than one SBOM reference, so the same
+	# patch can be recorded several times; report each one once.
+	{
+		printf '%-10s %-40s %s\n' "STATUS" "PACKAGE" "PATCH"
+		sort -u "$rows"
+	} > "$manifest"
+	total=$(sort -u "$rows" | grep -c . || true)
+	missing=$(sort -u "$rows" | grep -c '^MISSING' || true)
+	mirrored=$(sort -u "$rows" | grep -c '^MIRROR' || true)
+	rm -f "$rows"
+
+	info "Patch manifest written to [$manifest]"
+	info "Patches applied: [$total]  retrieved: [$((total-missing))]  from mirror: [$mirrored]  missing: [$missing]"
+	if [ -n "$APK_UNAVAILABLE" ]; then
+		local n=$(printf '%s' "$APK_UNAVAILABLE" | sort -u | grep -c . || true)
+		echo
+		echo "[$n] package(s) could not be downloaded at all, so the patches"
+		echo "applied to them cannot even be enumerated:"
+		echo
+		printf '%s' "$APK_UNAVAILABLE" | sort -u | sed -e '/^$/d' -e 's/^/  /'
+		echo
+	fi
+	if [ -n "$PATCH_REPO_DENIED" ]; then
+		echo
+		echo "The following build configuration repositories could not be read,"
+		echo "so the patches applied from them are unavailable:"
+		echo
+		printf '%s' "$PATCH_REPO_DENIED" | sort -u | sed -e '/^$/d' -e 's/^/  /'
+		echo
+		echo "These patches are applied to software you received. Until they are"
+		echo "shipped inside the APK itself, retrieving them requires access to"
+		echo "the private build configuration repository."
+		echo
+	fi
+}
+
+# Pull the build-time metadata out of an APK we just downloaded: the locked
+# melange configuration, and any patches shipped alongside it in the control
+# section.
+harvest_apk_metadata() {
+	local apk_file="$1"
+	local sbom="$2"
+	local config=$(config_for_sbom "$sbom")
+	local pkg=
+	extract_melange_config "$apk_file" "$config" || return 0
+	pkg=$(melange_pkg_name "$config") || pkg=$(basename "$config" .melange.yaml)
+	extract_embedded_patches "$apk_file" "$(patchdir_for_pkg "$pkg")" || true
+}
+
 package_to_sbom() {
 	local package="$1"
 	local sbom="$2"
@@ -296,12 +629,17 @@ package_to_sbom() {
 			fi
 			local apk_file="$WORK_DIR/artifacts/${pkg_name}-${pkg_version}.apk"
 			if ! download_apk "$pkg_name" "$pkg_version" "$pkg_arch" "$apk_file"; then
+				# Without the APK we cannot even read which patches were
+				# applied, so this is a strictly worse gap than a patch whose
+				# contents we merely could not fetch. Record it as such.
 				info "WARNING! Cannot download APK for [$package]"
+				APK_UNAVAILABLE="$APK_UNAVAILABLE$pkg_name-$pkg_version"$'\n'
 				return
 			fi
 			info "Extracting SBOM from [$apk_file] to [$sbom]"
 			mkdir -p $(dirname "$sbom")
 			tar zxOf "$apk_file" --wildcards "var/lib/db/sbom/*.spdx.json" 2>/dev/null > "$sbom"
+			harvest_apk_metadata "$apk_file" "$sbom"
 			return
 		;;
 		*)
@@ -330,6 +668,7 @@ package_to_sbom() {
 	info "Extracting SBOM from [$apk_file] to [$sbom]"
 	mkdir -p $(dirname "$sbom")
 	tar zxOf "$apk_file" --wildcards "var/lib/db/sbom/*.spdx.json" 2>/dev/null > "$sbom"
+	harvest_apk_metadata "$apk_file" "$sbom"
 }
 
 # Download an APK by trying each repo from the image, then falling back to
@@ -369,27 +708,64 @@ download_apk() {
 # Set up Chainguard authentication for enterprise APK access.
 # This is lazy (called on first enterprise APK) and idempotent (runs only once).
 setup_chainguard_auth() {
-	if [ "$CHAINGUARD_AUTH_DONE" = "1" ]; then
+	if [ "$CHAINGUARD_AUTH_DONE" = "1" ] || [ "$CHAINGUARD_AUTH_FAILED" = "1" ]; then
 		return
 	fi
 	if [ -z "$CHAINGUARD_ORG" ]; then
 		info "WARNING: Enterprise APK encountered but no --org specified; skipping."
 		return
 	fi
-	type chainctl 2>&1 >/dev/null || error "Please install [chainctl] to access enterprise APKs."
-	info "Setting up Chainguard auth for org [$CHAINGUARD_ORG]"
-	local token_file
-	token_file=$(mktemp /tmp/chainguard-token.XXXXXX.json)
-	chainctl auth pull-token --parent="${CHAINGUARD_ORG}" -o json 2>/dev/null > "$token_file"
-	IDENTITY=$(jq -r .identity_id "$token_file")
-	IDENTITY_TOKEN=$(jq -r .token "$token_file")
-	rm -f "$token_file"
-	printf 'y\n' | chainctl iam role-bindings create \
-		--parent="${CHAINGUARD_ORG}" \
-		--identity="${IDENTITY}" \
-		--role=apk.pull
+	# Accept a pull token minted elsewhere. chainctl keeps its credentials in
+	# the system keyring, which is unavailable in a container or a CI job, so
+	# allow the token to be obtained on a machine that can log in and passed
+	# in through the environment.
+	if [ -n "$CHAINGUARD_TOKEN" ]; then
+		IDENTITY="${CHAINGUARD_IDENTITY:-user}"
+		IDENTITY_TOKEN="$CHAINGUARD_TOKEN"
+		CHAINGUARD_AUTH_DONE=1
+		info "Using token from the environment for org [$CHAINGUARD_ORG]"
+		return
+	fi
+	# Not being able to authenticate is not fatal. A caller without access to
+	# enterprise packages should still collect everything they can reach, and
+	# get a manifest naming what they could not, rather than losing the run.
+	if ! type chainctl >/dev/null 2>&1; then
+		info "WARNING: chainctl not installed; skipping enterprise APKs."
+		info "         Set CHAINGUARD_TOKEN to a token for [$APK_AUDIENCE] instead:"
+		info "         chainctl auth token --audience $APK_AUDIENCE"
+		CHAINGUARD_AUTH_FAILED=1
+		return
+	fi
+	info "Requesting a [$APK_AUDIENCE] token for org [$CHAINGUARD_ORG]"
+	if ! chainguard_apk_token; then
+		# Not logged in, or the token expired. Use the device flow, which
+		# prints a URL to visit instead of opening a browser, so this works
+		# over ssh and anywhere without a display. chainctl blocks until the
+		# login completes, then the run continues.
+		info "Not authenticated for [$APK_AUDIENCE]; starting device login."
+		info "Visit the URL below to authenticate; this will continue automatically."
+		chainctl auth login --headless --audience "$APK_AUDIENCE" || true
+		if ! chainguard_apk_token; then
+			info "WARNING: could not obtain a [$APK_AUDIENCE] token; skipping enterprise APKs."
+			CHAINGUARD_AUTH_FAILED=1
+			return
+		fi
+	fi
+	# apk.cgr.dev takes the token as the basic-auth password and ignores the
+	# username. Unlike a pull token this carries the caller's own entitlement,
+	# so it needs neither identity.create nor IAM write on the org.
+	IDENTITY="user"
 	CHAINGUARD_AUTH_DONE=1
 	info "Chainguard auth configured for org [$CHAINGUARD_ORG]"
+}
+
+# Fetch a token scoped to the APK registry audience
+chainguard_apk_token() {
+	local token
+	token=$(chainctl auth token --audience "$APK_AUDIENCE" 2>/dev/null) || return 1
+	[ -n "$token" ] || return 1
+	IDENTITY_TOKEN="$token"
+	return 0
 }
 
 # Check dependencies and set default values
@@ -403,9 +779,16 @@ mkdir -p "$SOURCES_DIR"
 WORK_DIR=
 CHAINGUARD_ORG=
 CHAINGUARD_AUTH_DONE=0
+CHAINGUARD_AUTH_FAILED=0
+APK_AUDIENCE="apk.cgr.dev"
+APK_UNAVAILABLE=
 IDENTITY=
 IDENTITY_TOKEN=
 APK_REPOS=
+PATCHES_ONLY=0
+PATCH_REPO_DENIED=
+MIRROR_FALLBACK=1
+WOLFI_MIRROR="wolfi-dev/os"
 
 # Handle command line options
 while [ ! -z "$1" ]; do
@@ -435,6 +818,18 @@ while [ ! -z "$1" ]; do
 			SBOM="$2"
 			shift 2
 		;;
+		--patches-only)
+			PATCHES_ONLY=1
+			shift
+		;;
+		--no-mirror)
+			MIRROR_FALLBACK=0
+			shift
+		;;
+		--apk-repo)
+			APK_REPOS="$APK_REPOS$2"$'\n'
+			shift 2
+		;;
 		-y|--yes)
 			YES=1
 			shift
@@ -454,7 +849,11 @@ while [ ! -z "$1" ]; do
 	esac
 done
 
-warn_about_resources
+# Patches-only runs fetch APKs and patch files rather than full upstream
+# source trees, so the multi-GB disk warning does not apply.
+if [ "$PATCHES_ONLY" = "0" ]; then
+	warn_about_resources
+fi
 
 # Print message about the limitations of the tool in this mode
 if [ "$PRIVILEGED" = "0" ]; then
@@ -518,4 +917,10 @@ if [ ! -z "$PACKAGE" ]; then
 	package_to_sbom "$PACKAGE" "$SBOM"
 	info "Fetched SBOM [$SBOM]"
 	handle_sbom "$SBOM"
+fi
+
+# Reconcile the patches the build configurations say were applied against the
+# patch files we were actually able to retrieve
+if [ -n "$WORK_DIR" ]; then
+	summarize_patches
 fi
